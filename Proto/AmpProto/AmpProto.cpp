@@ -22,7 +22,7 @@
 using namespace concurrency;
 
 
-typedef double out_type;
+typedef float out_type;
 typedef std::vector<out_type> MatrixType;
 
 template<typename T>
@@ -77,12 +77,13 @@ MatrixType AllocMatrix(size_t rows, size_t columns)
 	return MatrixType(rows*columns);
 }
 
-MatrixType GetNoiseMatrix(size_t rows, size_t columns, double trace_noise)
+MatrixType GetNoiseMatrix(size_t rows, size_t columns, out_type trace_noise)
 {
 	std::random_device rd;
 	std::mt19937 eng(rd());
 	if (trace_noise < 0) trace_noise *= -1.0;
-	std::normal_distribution<double> dist(0, trace_noise);
+
+	std::uniform_real<out_type> dist(0, trace_noise);
 
 	auto noise_func = std::bind(dist, std::ref(eng));
 
@@ -101,11 +102,15 @@ MatrixType MultiplyCpp(const MatrixType &aMatrix, const MatrixType &bMatrix)
 
 	auto productMatrix = AllocMatrix(rows, columns);
 
-	for (size_t row = 0; row < rows; row++) {
-		for (size_t col = 0; col < columns; col++) {
+	for (size_t row = 0; row < rows; row++) 
+	{
+		auto idxRow = row*columns;
+		for (size_t col = 0; col < columns; col++)
+		{
 			// Multiply the row of A by the column of B to get the row, column of product.
-			for (size_t inner = 0; inner < innerSize; inner++) {
-				productMatrix[row*columns + col] += aMatrix[row*columns + inner] * bMatrix[inner*columns + col];
+			for (size_t inner = 0; inner < innerSize; inner++)
+			{
+				productMatrix[idxRow + col] += aMatrix[idxRow + inner] * bMatrix[inner*columns + col];
 			}
 		}
 	}
@@ -113,9 +118,8 @@ MatrixType MultiplyCpp(const MatrixType &aMatrix, const MatrixType &bMatrix)
 	return productMatrix;
 }
 
-void MultiplyAMP(const MatrixType &aMatrix, const MatrixType &bMatrix) 
+MatrixType MultiplyAMP(const MatrixType &aMatrix, const MatrixType &bMatrix)
 {
-#if 0
 	int mSize = static_cast<int>(sqrt(aMatrix.size()));
 	size_t rows = mSize;
 	size_t columns = mSize;
@@ -123,49 +127,27 @@ void MultiplyAMP(const MatrixType &aMatrix, const MatrixType &bMatrix)
 
 	auto productMatrix = AllocMatrix(rows, columns);
 
-	array_view<const MatrixType::value_type, 2> a(rows, columns, aMatrix);
-	array_view<const MatrixType::value_type, 2> b(rows, columns, bMatrix);
-	array_view<MatrixType::value_type, 2> product(rows, columns, productMatrix);
+	array_view<const MatrixType::value_type, 2> a(rows, columns, aMatrix.data());
+	array_view<const MatrixType::value_type, 2> b(rows, columns, bMatrix.data());
+	array_view<MatrixType::value_type, 2> product(rows, columns, productMatrix.data());
 
 	parallel_for_each(
 		product.extent,
-		[=](index<2> idx) restrict(amp) {
-		int row = idx[0];
-		int col = idx[1];
-		for (int inner = 0; inner < innerSize; inner++) {
-			product[idx] += a(row, inner) * b(inner, col);
+		[=](index<2> idx) restrict(amp) 
+		{
+			int row = idx[0];
+			int col = idx[1];
+			for (size_t inner = 0; inner < rows; inner++) 
+			{
+				product[idx] += a(row, inner) * b(inner, col);
+			}
 		}
-	}
 	);
 
 	product.synchronize();
 
-//	productMatrix.assign(product.)
-#else
-	int aMatrix11[] = { 1, 4, 2, 5, 3, 6 };
-	int bMatrix11[] = { 7, 8, 9, 10, 11, 12 };
-	int productMatrix[] = { 0, 0, 0, 0, 0, 0, 0, 0, 0 };
-
-	array_view<int, 2> a(3, 2, aMatrix11);
-	array_view<int, 2> b(2, 3, bMatrix11);
-	array_view<int, 2> product(3, 3, productMatrix);
-
-	parallel_for_each(
-		product.extent,
-		[=](index<2> idx) restrict(amp) {
-		int row = idx[0];
-		int col = idx[1];
-		for (int inner = 0; inner < 2; inner++) {
-			product[idx] += a(row, inner) * b(inner, col);
-		}
-	}
-	);
-
-	product.synchronize();
-
-#endif
+	return productMatrix;
 }
-
 
 int _tmain(int argc, _TCHAR* argv[])
 {
@@ -179,8 +161,8 @@ int _tmain(int argc, _TCHAR* argv[])
 	std::cout << "Test duration: " << duration << " ms." << std::endl;
 
 	
-	auto mA = GetNoiseMatrix(5, 5, 1); // std::vector<out_type>({ 0, 1, 2, 3 });
-	auto mB = GetNoiseMatrix(5, 5, 1); // std::vector<out_type>({ 0, 1, 2, 3 });
+	auto mA = GetNoiseMatrix(500, 500, 5); // std::vector<out_type>({ 0, 1, 2, 3 });
+	auto mB = GetNoiseMatrix(500, 500, 5); // std::vector<out_type>({ 0, 1, 2, 3 });
 
 	start = std::chrono::steady_clock::now();
 	auto product = MultiplyCpp(mA, mB);
@@ -190,7 +172,7 @@ int _tmain(int argc, _TCHAR* argv[])
 	std::cout << "C++ mul duration: " << duration << " ms." << std::endl;
 
 	start = std::chrono::steady_clock::now();
-	MultiplyAMP(mA, mB);
+	auto product2 = MultiplyAMP(mA, mB);
 	end = std::chrono::steady_clock::now();
 
 	duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
